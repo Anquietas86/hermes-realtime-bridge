@@ -1,0 +1,32 @@
+[project]
+name = "hermes-realtime-bridge"
+version = "0.1.0"
+description = "Realtime voice bridge for Hermes Agent — OpenAI Realtime API with swappable audio adapters (Voice PE, Discord VC)"
+requires-python = ">=3.11"
+dependencies = [
+    "websockets>=12.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+voice-pe = [
+    "aiohttp>=3.9",
+]
+discord = [
+    "discord.py[voice]>=2.4",
+    "PyNaCl>=1.5",
+]
+all = [
+    "hermes-realtime-bridge[voice-pe,discord]",
+]
+
+[project.scripts]
+hermes-realtime = "hermes_realtime.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

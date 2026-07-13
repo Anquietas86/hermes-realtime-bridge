@@ -1,0 +1,27 @@
+# Hermes Realtime Bridge — Example Configuration
+# Copy to config.yaml and customize
+
+# ── Realtime API ─────────────────────────────────────────────────────────
+model: gpt-4o-realtime-preview
+voice: alloy              # alloy, echo, shimmer, onyx, nova, fable
+temperature: 0.8
+instructions: |
+  You are Jarvis, a capable AI assistant. You have access to tools
+  that let you control smart home devices, query infrastructure, and
+  access persistent memory. Be concise and helpful. Use tools when
+  appropriate.
+
+# ── Tools ────────────────────────────────────────────────────────────────
+tools: true               # Enable Hermes tool bridge (HA, infra, memory, shell)
+
+# ── Voice PE Adapter ─────────────────────────────────────────────────────
+voice_pe:
+  host: voice-pe.local    # ESPHome device hostname or IP
+  port: 6053              # ESPHome WebSocket port
+  password: null          # ESPHome API password (null = no auth)
+
+# ── Discord VC Adapter ───────────────────────────────────────────────────
+discord:
+  token: null             # Discord bot token (or set DISCORD_BOT_TOKEN env var)
+  guild_id: null          # Discord guild/server ID
+  channel_id: null        # Discord voice channel ID
