@@ -134,7 +134,7 @@ class RealtimeBridge:
         }
         url = f"{self.base_url}?model={self.config.model}"
 
-        async with websockets.connect(url, extra_headers=headers) as ws:
+        async with websockets.connect(url, additional_headers=headers, open_timeout=15) as ws:
             self._ws = ws
             logger.info("Connected to Realtime API")
 
