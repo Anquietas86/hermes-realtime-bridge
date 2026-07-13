@@ -157,44 +157,39 @@ class DiscordVCAdapter(AudioAdapter):
     # ── Audio Processing ──────────────────────────────────────────────
 
     async def _receive_audio_loop(self) -> None:
-        """Receive Opus packets from Discord, decode to PCM16, queue for bridge.
+        """Receive decoded audio from Discord via Sink, resample, queue for bridge.
 
-        Discord sends 48kHz stereo Opus. We decode and downsample to 16kHz mono
-        PCM16 for the Realtime API.
+        discord.py 2.x uses VoiceClient.listen(Sink) for receiving audio.
+        The Sink receives 48kHz stereo PCM16 — we downsample to 16kHz mono.
         """
         import opuslib
 
-        decoder = opuslib.Decoder(48000, 2)  # Discord: 48kHz stereo
+        class PCMQueueSink(discord.sinks.Sink):
+            def __init__(self, queue, parent):
+                super().__init__()
+                self.queue = queue
+                self.parent = parent
 
+            def write(self, data, user):
+                """Called by discord.py with decoded PCM (48kHz stereo)."""
+                if data and user:
+                    try:
+                        pcm_16k = self.parent._resample_48k_stereo_to_16k_mono(data)
+                        self.queue.put_nowait(pcm_16k)
+                    except asyncio.QueueFull:
+                        pass
+
+            def cleanup(self):
+                pass
+
+        sink = PCMQueueSink(self.audio_queue, self)
+        self.voice_client.listen(sink)
+
+        # Keep the loop alive while connected
         while self._running and self.voice_client and self.voice_client.is_connected():
-            try:
-                # VoiceClient.read() returns raw Opus packets from the UDP socket
-                # This is a blocking call — use a thread to avoid blocking the event loop
-                opus_data = await asyncio.to_thread(
-                    self.voice_client.read
-                )
+            await asyncio.sleep(0.5)
 
-                if not opus_data:
-                    await asyncio.sleep(0.01)
-                    continue
-
-                # Decode Opus → PCM (48kHz stereo, 16-bit)
-                pcm_48k_stereo = decoder.decode(opus_data, 960 * 2 * 2)  # 20ms frame
-
-                # Downsample to 16kHz mono
-                pcm_16k_mono = self._resample_48k_stereo_to_16k_mono(pcm_48k_stereo)
-
-                # Queue for the bridge
-                try:
-                    self.audio_queue.put_nowait(pcm_16k_mono)
-                except asyncio.QueueFull:
-                    pass  # Drop if bridge isn't consuming fast enough
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.debug("Audio receive error: %s", e)
-                await asyncio.sleep(0.1)
+        self.voice_client.stop_listening()
 
     async def _send_audio_loop(self) -> None:
         """Read PCM16 from TTS queue, encode to Opus, send to Discord.
