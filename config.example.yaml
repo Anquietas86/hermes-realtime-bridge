@@ -20,8 +20,10 @@ discord:
   guild_id: null              # Discord server (guild) ID
   channel_id: null            # Discord voice channel ID
 
-# ── Matrix VC Adapter (planned) ──────────────────────────────────────────
+# ── Matrix VC Adapter ────────────────────────────────────────────────────
 matrix:
   homeserver: https://matrix.hagger.id.au
-  access_token: null          # Matrix access token
-  room_id: null               # Matrix room ID for voice
+  access_token: null          # Matrix access token (or set MATRIX_ACCESS_TOKEN env var)
+  user_id: "@jarvis:hagger.au"
+  room_id: null               # Matrix room ID for voice calls
+  auto_answer: true           # Auto-accept incoming calls

@@ -41,22 +41,23 @@ Audio Source (Voice PE / Discord VC / Matrix VC)
 - `src/hermes_realtime/tools.py` — HermesToolBridge (subprocess mode)
 - `src/hermes_realtime/adapters/voice_pe.py` — Voice PE adapter (ESPHome WebSocket)
 - `src/hermes_realtime/adapters/discord_vc.py` — Discord VC adapter (Opus ↔ PCM)
-- `src/hermes_realtime/cli.py` — CLI entrypoint
+- `src/hermes_realtime/adapters/matrix_vc.py` — Matrix VC adapter (WebRTC + Opus, ✅ tested: syncs with homeserver)
+- `src/hermes_realtime/cli.py` — CLI entrypoint (voice-pe, discord-vc, matrix-vc)
 - `scripts/test_connectivity.py` — API connectivity test (✅ passing)
+- `scripts/test_matrix_vc.py` — Matrix adapter test (✅ passing: syncs, discovers rooms)
 - `.env` — API key stored (600 perms)
 - `.env.example` — template
-- `config.example.yaml` — config template
+- `config.example.yaml` — config template (all 3 adapters)
 - Venv set up with all deps (uv)
 
 ### 🚧 In Progress
-- `src/hermes_realtime/adapters/matrix_vc.py` — Matrix VC adapter (planned)
+- Voice PE hardware order ($69 USD)
 
 ### ⬜ TODO
 - `README.md` — docs
-- Git init + GitHub push
-- Voice PE hardware order ($69 USD)
-- Matrix VC adapter implementation
+- Voice PE hardware order
 - systemd service file
+- End-to-end Matrix voice call test (needs a second Matrix client to initiate call)
 
 ## Key Design Decisions
 

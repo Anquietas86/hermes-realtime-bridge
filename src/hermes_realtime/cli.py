@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--adapter",
-        choices=["voice-pe", "discord-vc"],
+        choices=["voice-pe", "discord-vc", "matrix-vc"],
         required=True,
         help="Audio adapter to use",
     )
@@ -82,6 +82,14 @@ def parse_args() -> argparse.Namespace:
     discord.add_argument("--discord-guild", type=int, default=None, help="Discord guild ID")
     discord.add_argument("--discord-channel", type=int, default=None, help="Discord voice channel ID")
 
+    # Matrix VC adapter args
+    matrix = parser.add_argument_group("Matrix VC adapter")
+    matrix.add_argument("--matrix-homeserver", default=None, help="Matrix homeserver URL")
+    matrix.add_argument("--matrix-token", default=None, help="Matrix access token")
+    matrix.add_argument("--matrix-user", default=None, help="Matrix user ID (@user:server)")
+    matrix.add_argument("--matrix-room", default=None, help="Matrix room ID for voice calls")
+    matrix.add_argument("--matrix-no-auto-answer", action="store_true", help="Don't auto-answer calls")
+
     return parser.parse_args()
 
 
@@ -102,6 +110,13 @@ def load_config(config_path: Path | None) -> dict:
             "token": None,
             "guild_id": None,
             "channel_id": None,
+        },
+        "matrix": {
+            "homeserver": "https://matrix.hagger.id.au",
+            "access_token": None,
+            "user_id": "@jarvis:hagger.au",
+            "room_id": None,
+            "auto_answer": True,
         },
     }
 
@@ -168,6 +183,31 @@ async def main_async() -> None:
             channel_id=channel_id,
         )
         adapter = DiscordVCAdapter(dc_config)
+
+    elif args.adapter == "matrix-vc":
+        from .adapters.matrix_vc import MatrixVCAdapter, MatrixVCConfig
+
+        homeserver = args.matrix_homeserver or config["matrix"]["homeserver"]
+        token = args.matrix_token or config["matrix"]["access_token"] or os.environ.get("MATRIX_ACCESS_TOKEN")
+        user_id = args.matrix_user or config["matrix"]["user_id"]
+        room_id = args.matrix_room or config["matrix"]["room_id"]
+        auto_answer = not args.matrix_no_auto_answer and config["matrix"].get("auto_answer", True)
+
+        if not token:
+            logger.error("No Matrix access token. Set MATRIX_ACCESS_TOKEN or pass --matrix-token.")
+            sys.exit(1)
+        if not room_id:
+            logger.error("No Matrix room ID. Pass --matrix-room.")
+            sys.exit(1)
+
+        mx_config = MatrixVCConfig(
+            homeserver=homeserver,
+            access_token=token,
+            user_id=user_id,
+            room_id=room_id,
+            auto_answer=auto_answer,
+        )
+        adapter = MatrixVCAdapter(mx_config)
 
     else:
         logger.error("Unknown adapter: %s", args.adapter)
