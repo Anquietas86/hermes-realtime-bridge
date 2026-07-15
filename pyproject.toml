@@ -19,10 +19,9 @@ discord = [
     "PyNaCl>=1.5",
 ]
 matrix = [
-    "matrix-nio>=0.25",
-    "aiortc>=1.9",
-    "av>=12.0",
-    "opuslib>=3.0",
+    "livekit>=1.0",
+    "livekit-api>=1.0",
+    "numpy>=1.24",
 ]
 all = [
     "hermes-realtime-bridge[voice-pe,discord,matrix]",

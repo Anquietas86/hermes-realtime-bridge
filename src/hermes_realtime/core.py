@@ -89,7 +89,7 @@ class RealtimeConfig:
     )
     temperature: float = 0.8
     sample_rate: int = 24000  # GA API uses 24kHz PCM16
-    output_modalities: list[str] = field(default_factory=lambda: ["audio", "text"])
+    output_modalities: list[str] = field(default_factory=lambda: ["audio"])
     turn_detection: Optional[dict] = field(
         default_factory=lambda: {
             "type": "semantic_vad",

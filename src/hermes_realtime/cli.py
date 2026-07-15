@@ -83,12 +83,12 @@ def parse_args() -> argparse.Namespace:
     discord.add_argument("--discord-channel", type=int, default=None, help="Discord voice channel ID")
 
     # Matrix VC adapter args
-    matrix = parser.add_argument_group("Matrix VC adapter")
-    matrix.add_argument("--matrix-homeserver", default=None, help="Matrix homeserver URL")
-    matrix.add_argument("--matrix-token", default=None, help="Matrix access token")
-    matrix.add_argument("--matrix-user", default=None, help="Matrix user ID (@user:server)")
-    matrix.add_argument("--matrix-room", default=None, help="Matrix room ID for voice calls")
-    matrix.add_argument("--matrix-no-auto-answer", action="store_true", help="Don't auto-answer calls")
+    matrix = parser.add_argument_group("Matrix VC adapter (LiveKit)")
+    matrix.add_argument("--matrix-livekit-url", default=None, help="LiveKit server URL (ws://host:7880)")
+    matrix.add_argument("--matrix-livekit-key", default=None, help="LiveKit API key")
+    matrix.add_argument("--matrix-livekit-secret", default=None, help="LiveKit API secret")
+    matrix.add_argument("--matrix-room", default=None, help="LiveKit room name for voice calls")
+    matrix.add_argument("--matrix-no-auto-join", action="store_true", help="Don't auto-join calls")
 
     return parser.parse_args()
 
@@ -112,11 +112,11 @@ def load_config(config_path: Path | None) -> dict:
             "channel_id": None,
         },
         "matrix": {
-            "homeserver": "https://matrix.hagger.id.au",
-            "access_token": None,
-            "user_id": "@jarvis:hagger.au",
+            "livekit_url": "ws://192.168.0.7:7880",
+            "api_key": None,
+            "api_secret": None,
             "room_id": None,
-            "auto_answer": True,
+            "auto_join": True,
         },
     }
 
@@ -146,8 +146,20 @@ async def main_async() -> None:
     # Config
     config = load_config(args.config)
 
-    # API key
-    api_key = args.api_key or os.environ.get("OPENAI_API_KEY")
+    # API key — always prefer project .env over Hermes .env
+    api_key = args.api_key
+    if not api_key:
+        # Try reading from .env in project root FIRST (takes priority)
+        env_path = Path(__file__).parent.parent.parent / ".env"
+        if env_path.exists():
+            with open(env_path) as f:
+                for line in f:
+                    if line.startswith("OPENAI_API_KEY="):
+                        api_key = line.strip().split("=", 1)[1]
+                        break
+    if not api_key:
+        # Fall back to environment variable
+        api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         logger.error("No API key. Set OPENAI_API_KEY env var or pass --api-key.")
         sys.exit(1)
@@ -187,25 +199,25 @@ async def main_async() -> None:
     elif args.adapter == "matrix-vc":
         from .adapters.matrix_vc import MatrixVCAdapter, MatrixVCConfig
 
-        homeserver = args.matrix_homeserver or config["matrix"]["homeserver"]
-        token = args.matrix_token or config["matrix"]["access_token"] or os.environ.get("MATRIX_ACCESS_TOKEN")
-        user_id = args.matrix_user or config["matrix"]["user_id"]
+        livekit_url = args.matrix_livekit_url or config["matrix"]["livekit_url"]
+        lk_api_key = args.matrix_livekit_key or config["matrix"]["api_key"] or os.environ.get("LIVEKIT_API_KEY", "")
+        lk_api_secret = args.matrix_livekit_secret or config["matrix"]["api_secret"] or os.environ.get("LIVEKIT_API_SECRET", "")
         room_id = args.matrix_room or config["matrix"]["room_id"]
-        auto_answer = not args.matrix_no_auto_answer and config["matrix"].get("auto_answer", True)
+        auto_join = not args.matrix_no_auto_join and config["matrix"].get("auto_join", True)
 
-        if not token:
-            logger.error("No Matrix access token. Set MATRIX_ACCESS_TOKEN or pass --matrix-token.")
+        if not lk_api_key or not lk_api_secret:
+            logger.error("No LiveKit API key/secret. Set LIVEKIT_API_KEY/LIVEKIT_API_SECRET or pass --matrix-livekit-key/--matrix-livekit-secret.")
             sys.exit(1)
         if not room_id:
-            logger.error("No Matrix room ID. Pass --matrix-room.")
+            logger.error("No LiveKit room name. Pass --matrix-room.")
             sys.exit(1)
 
         mx_config = MatrixVCConfig(
-            homeserver=homeserver,
-            access_token=token,
-            user_id=user_id,
+            livekit_url=livekit_url,
+            api_key=lk_api_key,
+            api_secret=lk_api_secret,
             room_id=room_id,
-            auto_answer=auto_answer,
+            auto_join=auto_join,
         )
         adapter = MatrixVCAdapter(mx_config)
 

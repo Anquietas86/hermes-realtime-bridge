@@ -20,10 +20,10 @@ discord:
   guild_id: null              # Discord server (guild) ID
   channel_id: null            # Discord voice channel ID
 
-# ── Matrix VC Adapter ────────────────────────────────────────────────────
+# ── Matrix VC Adapter (LiveKit) ──────────────────────────────────────────
 matrix:
-  homeserver: https://matrix.hagger.id.au
-  access_token: null          # Matrix access token (or set MATRIX_ACCESS_TOKEN env var)
-  user_id: "@jarvis:hagger.au"
-  room_id: "!ooYStQUSKarbOQeTOj:hagger.au"  # DM room with @josh:hagger.au (call button visible here)
-  auto_answer: true           # Auto-accept incoming calls
+  livekit_url: "ws://192.168.0.7:7880"  # LiveKit server on Synapse LXC
+  api_key: null                           # LiveKit API key (or LIVEKIT_API_KEY env var)
+  api_secret: null                        # LiveKit API secret (or LIVEKIT_API_SECRET env var)
+  room_id: "!ooYStQUSKarbOQeTOj:hagger.au"  # Matrix room ID = LiveKit room name
+  auto_join: true                         # Auto-join calls
