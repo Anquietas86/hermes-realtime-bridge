@@ -25,5 +25,5 @@ matrix:
   homeserver: https://matrix.hagger.id.au
   access_token: null          # Matrix access token (or set MATRIX_ACCESS_TOKEN env var)
   user_id: "@jarvis:hagger.au"
-  room_id: null               # Matrix room ID for voice calls
+  room_id: "!aNJPgFFXXZpbTnEjAG:hagger.au"  # Jarvis Voice room
   auto_answer: true           # Auto-accept incoming calls
