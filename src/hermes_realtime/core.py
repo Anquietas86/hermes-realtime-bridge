@@ -1,7 +1,10 @@
-"""Core Realtime Bridge — OpenAI Realtime API WebSocket client.
+"""Core Realtime Bridge — OpenAI Realtime API WebSocket client (GA v2).
 
 Handles the WebSocket lifecycle, audio streaming, and function call routing.
 Audio source/sink adapters plug in via the AudioAdapter interface.
+
+API version: Realtime API GA (gpt-realtime-2.1)
+Docs: https://developers.openai.com/api/docs/guides/realtime-conversations
 """
 
 from __future__ import annotations
@@ -38,12 +41,12 @@ class AudioAdapter(ABC):
 
     @abstractmethod
     async def read_audio(self) -> Optional[bytes]:
-        """Read a chunk of 16kHz mono PCM16 audio. Return None if no data."""
+        """Read a chunk of 24kHz mono PCM16 audio. Return None if no data."""
         ...
 
     @abstractmethod
     async def write_audio(self, pcm: bytes) -> None:
-        """Write a chunk of 16kHz mono PCM16 audio to the sink."""
+        """Write a chunk of 24kHz mono PCM16 audio to the sink."""
         ...
 
     @abstractmethod
@@ -74,10 +77,10 @@ class ToolBridge(ABC):
 
 @dataclass
 class RealtimeConfig:
-    """Configuration for a Realtime API session."""
+    """Configuration for a Realtime API session (GA v2)."""
 
-    model: str = "gpt-4o-realtime-preview"
-    voice: str = "alloy"
+    model: str = "gpt-realtime-2.1"
+    voice: str = "marin"  # marin and cedar recommended for best quality
     instructions: str = (
         "You are Jarvis, a capable AI assistant. You have access to tools "
         "that let you control smart home devices, query infrastructure, and "
@@ -85,17 +88,14 @@ class RealtimeConfig:
         "appropriate."
     )
     temperature: float = 0.8
-    input_audio_format: str = "pcm16"
-    output_audio_format: str = "pcm16"
-    input_audio_transcription: Optional[dict] = None
+    sample_rate: int = 24000  # GA API uses 24kHz PCM16
+    output_modalities: list[str] = field(default_factory=lambda: ["audio", "text"])
     turn_detection: Optional[dict] = field(
         default_factory=lambda: {
-            "type": "server_vad",
-            "threshold": 0.5,
-            "prefix_padding_ms": 300,
-            "silence_duration_ms": 500,
+            "type": "semantic_vad",
         }
     )
+    input_audio_transcription: Optional[dict] = None
 
 
 # ── Core Bridge ──────────────────────────────────────────────────────────
@@ -130,13 +130,12 @@ class RealtimeBridge:
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "OpenAI-Beta": "realtime=v1",
         }
         url = f"{self.base_url}?model={self.config.model}"
 
         async with websockets.connect(url, additional_headers=headers, open_timeout=15) as ws:
             self._ws = ws
-            logger.info("Connected to Realtime API")
+            logger.info("Connected to Realtime API (model=%s)", self.config.model)
 
             # Send session config
             await self._send_session_update()
@@ -169,19 +168,34 @@ class RealtimeBridge:
     # ── Internal ──────────────────────────────────────────────────────
 
     async def _send_session_update(self) -> None:
-        """Send session configuration to the Realtime API."""
-        session_config = {
+        """Send session configuration to the Realtime API (GA v2 format)."""
+        session_config: dict[str, Any] = {
             "type": "session.update",
             "session": {
-                "modalities": ["text", "audio"],
+                "type": "realtime",
+                "model": self.config.model,
+                "output_modalities": self.config.output_modalities,
                 "instructions": self.config.instructions,
-                "voice": self.config.voice,
-                "input_audio_format": self.config.input_audio_format,
-                "output_audio_format": self.config.output_audio_format,
-                "temperature": self.config.temperature,
-                "turn_detection": self.config.turn_detection,
+                "audio": {
+                    "input": {
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": self.config.sample_rate,
+                        },
+                        "turn_detection": self.config.turn_detection,
+                    },
+                    "output": {
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": self.config.sample_rate,
+                        },
+                        "voice": self.config.voice,
+                    },
+                },
+                # temperature is not a session-level param in GA API
             },
         }
+
         if self.tool_bridge:
             tools = await self.tool_bridge.get_tools()
             if tools:
@@ -194,12 +208,17 @@ class RealtimeBridge:
             )
 
         await self._ws.send(json.dumps(session_config))
-        logger.info("Session configured: model=%s voice=%s", self.config.model, self.config.voice)
+        logger.info(
+            "Session configured: model=%s voice=%s rate=%dHz",
+            self.config.model,
+            self.config.voice,
+            self.config.sample_rate,
+        )
 
     async def _audio_loop(self) -> None:
-        """Read audio from adapter, send to Realtime API."""
-        chunk_ms = 20  # 20ms chunks
-        chunk_bytes = int(16000 * 2 * chunk_ms / 1000)  # 16kHz, 16-bit mono
+        """Read audio from adapter, send to Realtime API in 20ms chunks."""
+        chunk_ms = 20
+        chunk_bytes = int(self.config.sample_rate * 2 * chunk_ms / 1000)
 
         while self._running:
             try:
@@ -233,23 +252,28 @@ class RealtimeBridge:
                 event = json.loads(msg)
                 event_type = event.get("type", "")
 
-                if event_type == "response.audio.delta":
+                if event_type == "response.output_audio.delta":
                     # Audio chunk from the model
                     audio_b64 = event.get("delta", "")
                     if audio_b64:
                         pcm = _b64_to_bytes(audio_b64)
                         await self.adapter.write_audio(pcm)
 
-                elif event_type == "response.audio.done":
+                elif event_type == "response.output_audio.done":
                     await self.adapter.set_state("listening")
 
-                elif event_type == "response.audio_transcript.delta":
+                elif event_type == "response.output_audio_transcript.delta":
                     delta = event.get("delta", "")
                     if delta:
                         logger.info("Assistant: %s", delta)
 
-                elif event_type == "response.function_call_arguments.done":
-                    await self._handle_function_call(event)
+                elif event_type == "response.done":
+                    # Check for function calls in the response output
+                    response = event.get("response", {})
+                    output = response.get("output", [])
+                    for item in output:
+                        if item.get("type") == "function_call":
+                            await self._handle_function_call(item)
 
                 elif event_type == "input_audio_buffer.speech_started":
                     await self.adapter.set_state("listening")
@@ -262,19 +286,25 @@ class RealtimeBridge:
                 elif event_type == "error":
                     logger.error("Realtime API error: %s", event.get("error", {}))
 
+                elif event_type == "session.created":
+                    logger.info("Session created: %s", event.get("session", {}).get("id", "unknown"))
+
+                elif event_type == "session.updated":
+                    logger.info("Session updated")
+
             except websockets.ConnectionClosed:
                 break
             except Exception:
                 logger.exception("Response loop error")
 
-    async def _handle_function_call(self, event: dict) -> None:
+    async def _handle_function_call(self, item: dict) -> None:
         """Execute a function call and send the result back."""
         if not self.tool_bridge:
             return
 
-        call_id = event.get("call_id", "")
-        name = event.get("name", "")
-        arguments_str = event.get("arguments", "{}")
+        call_id = item.get("call_id", "")
+        name = item.get("name", "")
+        arguments_str = item.get("arguments", "{}")
 
         try:
             arguments = json.loads(arguments_str)
@@ -289,7 +319,7 @@ class RealtimeBridge:
         except Exception as e:
             result = json.dumps({"error": str(e)})
 
-        # Send result back
+        # Send result back as a function_call_output conversation item
         output_event = {
             "type": "conversation.item.create",
             "item": {

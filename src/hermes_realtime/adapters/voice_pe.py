@@ -28,7 +28,7 @@ class VoicePEConfig:
     host: str = "voice-pe.local"
     port: int = 6053
     api_password: Optional[str] = None
-    sample_rate: int = 16000
+    sample_rate: int = 24000  # OpenAI Realtime API GA uses 24kHz
 
 
 class VoicePEAdapter(AudioAdapter):

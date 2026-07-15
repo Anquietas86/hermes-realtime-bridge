@@ -46,13 +46,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="gpt-4o-realtime-preview",
-        help="Realtime model to use",
+        default="gpt-realtime-2.1",
+        help="Realtime model to use (gpt-realtime-2.1 recommended)",
     )
     parser.add_argument(
         "--voice",
-        default="alloy",
-        help="TTS voice (alloy, echo, shimmer, etc.)",
+        default="marin",
+        help="TTS voice (marin, cedar, alloy, ash, coral, echo, sage, shimmer, verse)",
     )
     parser.add_argument(
         "--instructions",
@@ -88,8 +88,8 @@ def parse_args() -> argparse.Namespace:
 def load_config(config_path: Path | None) -> dict:
     """Load YAML config, merge with defaults."""
     defaults = {
-        "model": "gpt-4o-realtime-preview",
-        "voice": "alloy",
+        "model": "gpt-realtime-2.1",
+        "voice": "marin",
         "temperature": 0.8,
         "instructions": None,
         "tools": True,

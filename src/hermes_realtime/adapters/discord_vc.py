@@ -29,7 +29,7 @@ class DiscordVCConfig:
     token: str = ""
     guild_id: int = 0
     channel_id: int = 0
-    sample_rate: int = 16000  # Target: 16kHz mono for Realtime API
+    sample_rate: int = 24000  # OpenAI Realtime API GA uses 24kHz
 
 
 class DiscordVCAdapter(AudioAdapter):
@@ -174,8 +174,8 @@ class DiscordVCAdapter(AudioAdapter):
                 """Called by discord.py with decoded PCM (48kHz stereo)."""
                 if data and user:
                     try:
-                        pcm_16k = self.parent._resample_48k_stereo_to_16k_mono(data)
-                        self.queue.put_nowait(pcm_16k)
+                        pcm_24k = self.parent._resample_48k_stereo_to_24k_mono(data)
+                        self.queue.put_nowait(pcm_24k)
                     except asyncio.QueueFull:
                         pass
 
@@ -202,10 +202,10 @@ class DiscordVCAdapter(AudioAdapter):
 
         while self._running and self.voice_client and self.voice_client.is_connected():
             try:
-                pcm_16k = await asyncio.wait_for(self.tts_queue.get(), timeout=0.5)
+                pcm_24k = await asyncio.wait_for(self.tts_queue.get(), timeout=0.5)
 
-                # Upsample 16kHz mono → 48kHz stereo
-                pcm_48k_stereo = self._resample_16k_mono_to_48k_stereo(pcm_16k)
+                # Upsample 24kHz mono → 48kHz stereo
+                pcm_48k_stereo = self._resample_24k_mono_to_48k_stereo(pcm_24k)
 
                 # Encode to Opus
                 opus_packet = encoder.encode(pcm_48k_stereo, 960 * 2)  # 20ms frame
@@ -225,11 +225,11 @@ class DiscordVCAdapter(AudioAdapter):
     # ── Resampling Helpers ────────────────────────────────────────────
 
     @staticmethod
-    def _resample_48k_stereo_to_16k_mono(pcm: bytes) -> bytes:
-        """Downsample 48kHz stereo PCM16 → 16kHz mono PCM16.
+    def _resample_48k_stereo_to_24k_mono(pcm: bytes) -> bytes:
+        """Downsample 48kHz stereo PCM16 → 24kHz mono PCM16.
 
-        Simple approach: average stereo channels, then take every 3rd sample
-        (48k / 16k = 3). For production, use scipy.signal.resample or soxr.
+        Simple approach: average stereo channels, then take every 2nd sample
+        (48k / 24k = 2). For production, use scipy.signal.resample or soxr.
         """
         import struct
 
@@ -240,21 +240,21 @@ class DiscordVCAdapter(AudioAdapter):
 
         samples = struct.unpack(f"<{num_samples * 2}h", pcm)
 
-        # Average stereo → mono, then decimate 3:1
-        mono_16k = []
-        for i in range(0, num_samples, 3):
+        # Average stereo → mono, then decimate 2:1
+        mono_24k = []
+        for i in range(0, num_samples, 2):
             left = samples[i * 2]
             right = samples[i * 2 + 1] if i * 2 + 1 < len(samples) else left
             mono = (left + right) // 2
-            mono_16k.append(mono)
+            mono_24k.append(mono)
 
-        return struct.pack(f"<{len(mono_16k)}h", *mono_16k)
+        return struct.pack(f"<{len(mono_24k)}h", *mono_24k)
 
     @staticmethod
-    def _resample_16k_mono_to_48k_stereo(pcm: bytes) -> bytes:
-        """Upsample 16kHz mono PCM16 → 48kHz stereo PCM16.
+    def _resample_24k_mono_to_48k_stereo(pcm: bytes) -> bytes:
+        """Upsample 24kHz mono PCM16 → 48kHz stereo PCM16.
 
-        Simple approach: repeat each sample 3×, duplicate to stereo.
+        Simple approach: repeat each sample 2×, duplicate to stereo.
         For production, use proper interpolation (scipy, soxr).
         """
         import struct
@@ -265,10 +265,10 @@ class DiscordVCAdapter(AudioAdapter):
 
         samples = struct.unpack(f"<{num_samples}h", pcm)
 
-        # Repeat each sample 3× (16k → 48k), duplicate to stereo
+        # Repeat each sample 2× (24k → 48k), duplicate to stereo
         stereo_48k = []
         for s in samples:
-            for _ in range(3):
+            for _ in range(2):
                 stereo_48k.append(s)  # left
                 stereo_48k.append(s)  # right
 

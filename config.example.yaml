@@ -1,27 +1,27 @@
-# Hermes Realtime Bridge — Example Configuration
+# Hermes Realtime Bridge Configuration
 # Copy to config.yaml and customize
 
-# ── Realtime API ─────────────────────────────────────────────────────────
-model: gpt-4o-realtime-preview
-voice: alloy              # alloy, echo, shimmer, onyx, nova, fable
-temperature: 0.8
-instructions: |
-  You are Jarvis, a capable AI assistant. You have access to tools
-  that let you control smart home devices, query infrastructure, and
-  access persistent memory. Be concise and helpful. Use tools when
-  appropriate.
-
-# ── Tools ────────────────────────────────────────────────────────────────
-tools: true               # Enable Hermes tool bridge (HA, infra, memory, shell)
+# ── Realtime API ──────────────────────────────────────────────────────────
+model: gpt-realtime-2.1       # OpenAI Realtime model
+voice: marin                  # TTS voice (marin, cedar, alloy, ash, coral, echo, sage, shimmer, verse)
+temperature: 0.8              # Response variability (note: not a session param in GA API)
+instructions: null            # System instructions (null = use default Jarvis prompt)
+tools: true                   # Enable Hermes tool bridge
 
 # ── Voice PE Adapter ─────────────────────────────────────────────────────
 voice_pe:
-  host: voice-pe.local    # ESPHome device hostname or IP
-  port: 6053              # ESPHome WebSocket port
-  password: null          # ESPHome API password (null = no auth)
+  host: voice-pe.local        # ESPHome device hostname/IP
+  port: 6053                  # ESPHome WebSocket port
+  password: null              # ESPHome API password (null = no auth)
 
 # ── Discord VC Adapter ───────────────────────────────────────────────────
 discord:
-  token: null             # Discord bot token (or set DISCORD_BOT_TOKEN env var)
-  guild_id: null          # Discord guild/server ID
-  channel_id: null        # Discord voice channel ID
+  token: null                 # Discord bot token (or set DISCORD_BOT_TOKEN env var)
+  guild_id: null              # Discord server (guild) ID
+  channel_id: null            # Discord voice channel ID
+
+# ── Matrix VC Adapter (planned) ──────────────────────────────────────────
+matrix:
+  homeserver: https://matrix.hagger.id.au
+  access_token: null          # Matrix access token
+  room_id: null               # Matrix room ID for voice
