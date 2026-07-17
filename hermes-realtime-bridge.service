@@ -1,0 +1,31 @@
+[Unit]
+Description=Hermes Realtime Bridge — OpenAI Realtime API voice bridge
+Documentation=https://github.com/Anquietas86/hermes-realtime-bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hermes-realtime-bridge
+EnvironmentFile=%h/projects/hermes-realtime-bridge/.env
+Environment=PATH=%h/projects/hermes-realtime-bridge/.venv/bin:%h/.hermes/hermes-agent/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/projects/hermes-realtime-bridge/.venv/bin/python -m hermes_realtime.cli --adapter matrix-vc --config %h/projects/hermes-realtime-bridge/config.yaml
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:%h/.hermes/logs/realtime-bridge.log
+StandardError=append:%h/.hermes/logs/realtime-bridge.log
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/projects/hermes-realtime-bridge
+ReadWritePaths=%h/.hermes/logs
+ReadWritePaths=%h/.hermes/sessions
+ReadOnlyPaths=%h/.hermes/hermes-agent
+ReadOnlyPaths=%h/.hermes/config.yaml
+ReadOnlyPaths=%h/.hermes/.env
+
+[Install]
+WantedBy=default.target

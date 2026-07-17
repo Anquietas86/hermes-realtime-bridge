@@ -2,18 +2,20 @@
 
 Sub-second voice interface for [Hermes Agent](https://github.com/NousResearch/hermes-agent) via OpenAI's Realtime API, with swappable audio adapters.
 
+**Status:** Core bridge tested and working with OpenAI Realtime API GA (`gpt-realtime-2.1`). Three adapters built: Voice PE hardware, Discord VC, Matrix VC (LiveKit).
+
 ## Architecture
 
 ```
-Audio Source (Voice PE / Discord VC)
+Audio Source (Voice PE / Discord VC / Matrix VC)
         │
         ▼
-  AudioAdapter (per-transport: PCM in/out)
+  AudioAdapter (per-transport: PCM in/out, 24kHz mono)
         │
         ▼
   RealtimeBridge (core: WebSocket ↔ OpenAI Realtime API)
         │
-        ├── Audio streaming (PCM16, 16kHz mono, 20ms chunks)
+        ├── Audio streaming (PCM16, 24kHz mono, 20ms chunks)
         ├── Function call routing → ToolBridge
         └── Session management (VAD, turn detection)
         │
@@ -21,114 +23,139 @@ Audio Source (Voice PE / Discord VC)
   ToolBridge → Hermes tools (HA, terminal, memory, etc.)
 ```
 
-## Features
-
-- **Sub-second latency** — streaming audio via OpenAI Realtime API (not pipeline STT→LLM→TTS)
-- **Swappable adapters** — Voice PE hardware and Discord VC, same bridge core
-- **Full tool access** — Realtime API function calls routed to Hermes tools (Home Assistant, infrastructure, memory, shell)
-- **Server VAD** — turn detection handled by the Realtime API
-- **Persistent context** — Realtime session carries conversation, Hermes carries your world
+One bridge, many adapters. The core is transport-agnostic — adapters handle the audio plumbing. The Realtime API is a faster voice frontend; Hermes remains the brain.
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.11+
-- OpenAI API key (for Realtime API)
-- Hermes Agent installed
-
-### Install
-
 ```bash
-cd ~/projects/hermes-realtime-bridge
-uv pip install -e ".[all]" --python /home/hermes/.hermes/hermes-agent/venv/bin/python
+# Clone and set up
+git clone https://github.com/Anquietas86/hermes-realtime-bridge.git
+cd hermes-realtime-bridge
+uv venv
+source .venv/bin/activate
+uv pip install -e ".[all]"
+
+# Set your API key
+echo "OPENAI_API_KEY=sk-..." > .env
+
+# Test connectivity
+python scripts/test_connectivity.py
+
+# Run with an adapter
+hermes-realtime --adapter discord-vc --config config.yaml
 ```
-
-### Voice PE (Hardware)
-
-```bash
-# Set API key
-export OPENAI_API_KEY="sk-..."
-
-# Run with Voice PE adapter
-hermes-realtime --adapter voice-pe --pe-host voice-pe.local
-```
-
-### Discord Voice Channel
-
-```bash
-# Set API key + Discord token
-export OPENAI_API_KEY="sk-..."
-export DISCORD_BOT_TOKEN="..."
-
-# Run with Discord adapter
-hermes-realtime --adapter discord-vc --discord-channel 1518510627524575292
-```
-
-### Configuration File
-
-```bash
-hermes-realtime --config config.yaml --adapter voice-pe
-```
-
-See `config.example.yaml` for all options.
 
 ## Adapters
 
-### Voice PE (Preview Edition)
+### Voice PE (ESPHome Hardware)
 
-Connects to Home Assistant Voice Preview Edition hardware running custom ESPHome firmware. The ESP32-S3 streams 16kHz mono PCM16 audio over WebSocket. XMOS XU316 handles AEC, beamforming, and noise suppression in hardware.
+Connects to a [Home Assistant Voice Preview Edition](https://www.home-assistant.io/voice-pe/) running custom ESPHome firmware that streams raw audio over WebSocket.
 
-- **Hardware:** $69 USD, one USB-C cable
-- **Firmware:** Custom ESPHome component (replaces stock `voice_assistant`)
-- **Wake word:** "Jarvis" via `micro_wake_word` (free, offline)
+- **Hardware:** Voice PE ($69 USD) — ESP32-S3 + XMOS XU316 audio DSP
+- **Firmware:** [TristanBrotherton/voicepe-realtime-firmware](https://github.com/TristanBrotherton/voicepe-realtime-firmware)
+- **Wake word:** "Jarvis" via `micro_wake_word` on-device (free, offline)
+- **Latency:** ~200-500ms
+
+```bash
+hermes-realtime --adapter voice-pe --config config.yaml
+```
 
 ### Discord VC
 
-Connects to a Discord voice channel. Decodes incoming Opus audio to PCM16, encodes outgoing PCM16 to Opus. Uses `discord.py[voice]`.
+Connects to a Discord voice channel and bridges Opus audio to/from the Realtime API. Uses the same proven VoiceReceiver decryption approach as the Hermes gateway.
 
-- **Requires:** Bot with Connect + Speak permissions
-- **Channel:** Any voice channel the bot can access
+**Important:** The bridge uses the same Discord bot token as the Hermes gateway. Discord only allows one voice connection per bot token per guild. For Discord voice, use the gateway's built-in `/voice join` instead. The Discord VC adapter is for standalone use or when the gateway isn't running.
+
+```bash
+export DISCORD_BOT_TOKEN="..."
+hermes-realtime --adapter discord-vc --config config.yaml
+```
+
+### Matrix VC (LiveKit)
+
+Joins MatrixRTC voice calls via LiveKit. Element Call creates a LiveKit room; this adapter joins as a participant and bridges audio.
+
+- **Backend:** LiveKit server (co-located with Synapse on LXC 209)
+- **Room:** Uses the existing DM room between @jarvis and @josh
+- **Auth:** LiveKit API key/secret (stored in Bitwarden)
+
+```bash
+export LIVEKIT_API_KEY="..."
+export LIVEKIT_API_SECRET="..."
+hermes-realtime --adapter matrix-vc --config config.yaml
+```
+
+## Configuration
+
+Copy `config.example.yaml` to `config.yaml` and customize:
+
+```yaml
+# Realtime API
+model: gpt-realtime-2.1
+voice: marin
+tools: true
+
+# Voice PE
+voice_pe:
+  host: voice-pe.local
+  port: 6053
+
+# Discord VC
+discord:
+  token: null          # or DISCORD_BOT_TOKEN env var
+  guild_id: null
+  channel_id: null
+
+# Matrix VC (LiveKit)
+matrix:
+  livekit_url: "ws://192.168.0.7:7880"
+  api_key: null        # or LIVEKIT_API_KEY env var
+  api_secret: null     # or LIVEKIT_API_SECRET env var
+  room_id: "!ooYStQUSKarbOQeTOj:hagger.au"
+  auto_join: true
+```
+
+## API Details
+
+Uses OpenAI Realtime API GA (`gpt-realtime-2.1`):
+- **Sample rate:** 24kHz PCM16 mono
+- **VAD:** Semantic VAD (server-side turn detection)
+- **Chunk size:** 20ms (480 samples)
+- **Voices:** marin, cedar, alloy, ash, ballad, coral, echo, sage, shimmer, verse
+- **Pricing:** $32/1M audio input tokens, $64/1M audio output tokens (~$5-15/month casual use)
 
 ## Tools
 
-The bridge exposes 5 Hermes tools to the Realtime API:
+The bridge routes Realtime API function calls to Hermes tools via subprocess:
 
 | Tool | Description |
 |------|-------------|
-| `ha_control` | Control Home Assistant devices (lights, climate, locks, etc.) |
-| `ha_query` | Query HA entity state or list entities |
-| `infra_query` | Check infrastructure health (NFS, Docker, network, Zabbix) |
-| `memory_lookup` | Look up information from persistent memory |
-| `run_command` | Run shell commands on the server |
+| `ha_control` | Control Home Assistant devices (lights, switches, climate) |
+| `ha_query` | Query Home Assistant entity states |
+| `infra_query` | Check infrastructure health (NFS, Docker, services) |
+| `memory_query` | Search Hermes persistent memory |
+| `shell_command` | Run shell commands (with approval) |
 
-## Cost
+## Systemd Service
 
-- **OpenAI Realtime API:** ~$0.06/min audio input, ~$0.24/min audio output
-- **Casual use estimate:** $5-15/month
-- **Wake word:** Free, local, offline (Voice PE only)
-
-## Project Structure
-
+```bash
+# Install as user service
+mkdir -p ~/.config/systemd/user
+cp hermes-realtime-bridge.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now hermes-realtime-bridge
 ```
-hermes-realtime-bridge/
-├── pyproject.toml
-├── CLAUDE.md                    # Project memory for AI assistants
-├── README.md                    # This file
-├── config.example.yaml
-├── src/
-│   └── hermes_realtime/
-│       ├── __init__.py
-│       ├── core.py              # RealtimeBridge, AudioAdapter ABC, ToolBridge ABC
-│       ├── tools.py             # HermesToolBridge (function calls → Hermes)
-│       ├── cli.py               # CLI entrypoint
-│       └── adapters/
-│           ├── __init__.py
-│           ├── voice_pe.py      # Voice PE (ESPHome WebSocket)
-│           └── discord_vc.py    # Discord VC (Opus ↔ PCM)
-├── scripts/
-└── tests/
-```
+
+## Dependencies
+
+- Python 3.11+
+- `websockets` — Realtime API WebSocket client
+- `numpy` — audio buffer handling
+- `pydantic` — config validation
+- `pyyaml` — config file parsing
+- Voice PE: `aiohttp`
+- Discord: `discord.py[voice]`, `PyNaCl`, `opuslib`
+- Matrix: `livekit`, `livekit-api`
 
 ## License
 
