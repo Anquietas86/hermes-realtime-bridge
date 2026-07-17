@@ -1,8 +1,8 @@
 # Hermes Realtime Bridge
 
-> **Status:** Core bridge tested and working with OpenAI Realtime API GA (gpt-realtime-2.1)
+> **Status:** Complete — all adapters built and tested, README + systemd service done, pushed to GitHub
 > **Started:** 2026-07-13
-> **Last updated:** 2026-07-15
+> **Last updated:** 2026-07-17
 > **Goal:** Sub-second voice interface for Hermes via OpenAI Realtime API, with swappable audio adapters (Voice PE hardware, Discord VC, Matrix VC)
 
 ## Architecture
@@ -40,24 +40,23 @@ Audio Source (Voice PE / Discord VC / Matrix VC)
     - Function call execution + result routing
 - `src/hermes_realtime/tools.py` — HermesToolBridge (subprocess mode)
 - `src/hermes_realtime/adapters/voice_pe.py` — Voice PE adapter (ESPHome WebSocket)
-- `src/hermes_realtime/adapters/discord_vc.py` — Discord VC adapter (Opus ↔ PCM)
-- `src/hermes_realtime/adapters/matrix_vc.py` — Matrix VC adapter (WebRTC + Opus, ✅ tested: syncs with homeserver)
+- `src/hermes_realtime/adapters/discord_vc.py` — Discord VC adapter (rewritten with proven VoiceReceiver approach)
+- `src/hermes_realtime/adapters/matrix_vc.py` — Matrix VC adapter (LiveKit, ✅ e2e tested: connects, joins room, publishes audio)
 - `src/hermes_realtime/cli.py` — CLI entrypoint (voice-pe, discord-vc, matrix-vc)
 - `scripts/test_connectivity.py` — API connectivity test (✅ passing)
-- `scripts/test_matrix_vc.py` — Matrix adapter test (✅ passing: syncs, discovers rooms)
-- `.env` — API key stored (600 perms)
+- `scripts/test_matrix_vc.py` — Matrix adapter e2e test (✅ passing: LiveKit connect + audio publish)
+- `README.md` — full documentation ✅
+- `hermes-realtime-bridge.service` — systemd user service file ✅
+- `.env` — API key + LiveKit creds stored (600 perms)
 - `.env.example` — template
 - `config.example.yaml` — config template (all 3 adapters)
 - Venv set up with all deps (uv)
-
-### 🚧 In Progress
-- Voice PE hardware order ($69 USD)
+- Git repo initialized, pushed to GitHub (Anquietas86/hermes-realtime-bridge)
 
 ### ⬜ TODO
-- `README.md` — docs
-- Voice PE hardware order
-- systemd service file
-- End-to-end Matrix voice call test (needs a second Matrix client to initiate call)
+- Voice PE hardware order ($69 USD)
+- Install systemd service on the host
+- End-to-end voice call test (needs a second Matrix client to initiate call)
 
 ## Key Design Decisions
 
@@ -87,9 +86,10 @@ The GA Realtime API (gpt-realtime-2.1) differs significantly from the beta:
 hermes-realtime-bridge/
 ├── pyproject.toml
 ├── CLAUDE.md                    ← this file
-├── README.md                    ← TODO
+├── README.md                    ← ✅ full docs
 ├── config.example.yaml          ← ✅
-├── .env                         ← ✅ (API key, 600 perms)
+├── hermes-realtime-bridge.service ← ✅ systemd user service
+├── .env                         ← ✅ (API key + LiveKit creds, 600 perms)
 ├── .env.example                 ← ✅
 ├── src/
 │   └── hermes_realtime/
@@ -100,10 +100,13 @@ hermes-realtime-bridge/
 │       └── adapters/
 │           ├── __init__.py
 │           ├── voice_pe.py      ← ✅ Voice PE (ESPHome WebSocket, 24kHz)
-│           ├── discord_vc.py    ← ✅ Discord VC (Opus ↔ PCM, 24kHz)
-│           └── matrix_vc.py     ← ⬜ Matrix VC (WebRTC + Opus)
+│           ├── discord_vc.py    ← ✅ Discord VC (VoiceReceiver approach, Opus ↔ PCM)
+│           └── matrix_vc.py     ← ✅ Matrix VC (LiveKit, e2e tested)
 ├── scripts/
-│   └── test_connectivity.py     ← ✅ API connectivity test (passing)
+│   ├── test_connectivity.py     ← ✅ API connectivity test (passing)
+│   ├── test_matrix_vc.py        ← ✅ Matrix VC e2e test (passing)
+│   ├── run_matrix_vc.py         ← ✅ Quick launcher
+│   └── run_matrix_vc.sh         ← ✅ Shell wrapper
 └── tests/
     └── test_core.py             ← ⬜
 ```
