@@ -32,7 +32,7 @@ async def main():
     # First, find available rooms
     import nio
     client = nio.AsyncClient(
-        homeserver="https://matrix.hagger.id.au",
+        homeserver="https://matrix.hagger.au",
         user="@jarvis:hagger.au",
     )
     client.access_token = token
@@ -66,7 +66,7 @@ async def main():
 
     # Test adapter
     config = MatrixVCConfig(
-        homeserver="https://matrix.hagger.id.au",
+        homeserver="https://matrix.hagger.au",
         access_token=token,
         user_id="@jarvis:hagger.au",
         room_id=home_room,

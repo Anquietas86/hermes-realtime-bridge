@@ -3,7 +3,7 @@
 Connects to a Discord voice channel, decodes incoming Opus audio to PCM16,
 and encodes outgoing PCM16 to Opus for playback.
 
-Uses discord.py[voice] for Discord integration and opuslib for Opus codec.
+Uses the same proven decryption approach as the gateway's VoiceReceiver.
 """
 
 from __future__ import annotations
@@ -11,8 +11,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import struct
+import threading
+import time
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 import discord
 from discord.ext import commands
@@ -33,7 +37,14 @@ class DiscordVCConfig:
 
 
 class DiscordVCAdapter(AudioAdapter):
-    """Connects to a Discord VC, streaming audio via Opus ↔ PCM16."""
+    """Connects to a Discord VC, streaming audio via Opus ↔ PCM16.
+
+    Uses the gateway's proven VoiceReceiver approach:
+    - conn.add_socket_listener() for packet capture
+    - Dynamic RTP header parsing (CSRC, extension, padding)
+    - NaCl Aead decryption with correct nonce format
+    - Opus decode (48kHz stereo) → resample to 24kHz mono
+    """
 
     name = "discord-vc"
 
@@ -55,11 +66,19 @@ class DiscordVCAdapter(AudioAdapter):
         self.audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
         self.tts_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
 
+        # Opus decoder
+        self._decoder = None
+        self._encoder = None
+
         # State
         self._running = False
         self._bot_task: Optional[asyncio.Task] = None
         self._audio_send_task: Optional[asyncio.Task] = None
-        self._audio_recv_task: Optional[asyncio.Task] = None
+
+        # Packet tracking (mirrors VoiceReceiver)
+        self._secret_key: Optional[bytes] = None
+        self._bot_ssrc: int = 0
+        self._packet_debug_count = 0
 
     # ── AudioAdapter Interface ────────────────────────────────────────
 
@@ -67,13 +86,19 @@ class DiscordVCAdapter(AudioAdapter):
         """Connect to Discord and join the voice channel."""
         self._running = True
 
-        @self.bot.event
-        async def on_ready():
+        async def connect_voice():
+            """Wait for guild to be available, then connect to voice."""
+            await self.bot.wait_until_ready()
             logger.info("Discord bot logged in as %s", self.bot.user)
 
-            guild = self.bot.get_guild(self.config.guild_id)
-            if not guild:
-                logger.error("Guild %s not found", self.config.guild_id)
+            for attempt in range(10):
+                guild = self.bot.get_guild(self.config.guild_id)
+                if guild:
+                    break
+                logger.debug("Waiting for guild %s (attempt %d)...", self.config.guild_id, attempt + 1)
+                await asyncio.sleep(1)
+            else:
+                logger.error("Guild %s not found after 10 attempts", self.config.guild_id)
                 return
 
             channel = guild.get_channel(self.config.channel_id)
@@ -84,24 +109,134 @@ class DiscordVCAdapter(AudioAdapter):
             try:
                 self.voice_client = await channel.connect()
                 logger.info("Joined voice channel: %s", channel.name)
-                self._connected.set()
 
-                # Start audio processing tasks
-                self._audio_recv_task = asyncio.create_task(self._receive_audio_loop())
+                # Set up Opus codec
+                import opuslib
+                self._decoder = opuslib.Decoder(48000, 2)  # Discord: 48kHz stereo
+                self._encoder = opuslib.Encoder(48000, 2, "voip")
+
+                # Register audio receive callback (gateway's proven approach)
+                self._register_audio_callback()
+
+                # Start audio send loop
                 self._audio_send_task = asyncio.create_task(self._send_audio_loop())
+
+                self._connected.set()
 
             except Exception as e:
                 logger.error("Failed to join voice channel: %s", e)
 
-        # Start the bot in background
         self._bot_task = asyncio.create_task(self._start_bot())
+        asyncio.create_task(connect_voice())
 
-        # Wait for voice connection (with timeout)
         try:
             await asyncio.wait_for(self._connected.wait(), timeout=30)
         except asyncio.TimeoutError:
             logger.error("Timed out waiting for Discord voice connection")
             await self.stop()
+
+    def _register_audio_callback(self) -> None:
+        """Register packet listener using gateway's proven approach.
+
+        Uses conn.add_socket_listener() (same as VoiceReceiver) and
+        does proper RTP header parsing with dynamic size calculation.
+        """
+        import nacl.secret
+
+        conn = self.voice_client._connection
+        self._secret_key = bytes(conn.secret_key)
+        self._bot_ssrc = conn.ssrc
+
+        # Use a thread-safe queue for cross-thread audio transfer
+        import queue
+        self._raw_queue: queue.Queue[bytes] = queue.Queue(maxsize=100)
+
+        def on_packet(data: bytes):
+            """Called by SocketReader thread with raw UDP data.
+
+            Mirrors VoiceReceiver._on_packet exactly.
+            """
+            if len(data) < 16:
+                return
+
+            # RTP version check: top 2 bits must be 10 (version 2).
+            # Payload type (byte 1 lower 7 bits) = 0x78 (120) for voice.
+            if (data[0] >> 6) != 2 or (data[1] & 0x7F) != 0x78:
+                return
+
+            first_byte = data[0]
+            _, _, seq, timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
+
+            # Skip bot's own audio
+            if ssrc == self._bot_ssrc:
+                return
+
+            # Calculate dynamic RTP header size (RFC 9335 / rtpsize mode)
+            cc = first_byte & 0x0F  # CSRC count
+            has_extension = bool(first_byte & 0x10)  # extension bit
+            has_padding = bool(first_byte & 0x20)  # padding bit
+            header_size = 12 + (4 * cc) + (4 if has_extension else 0)
+
+            if len(data) < header_size + 4:  # need at least header + nonce
+                return
+
+            # Read extension length from preamble (for skipping after decrypt)
+            ext_data_len = 0
+            if has_extension:
+                ext_preamble_offset = 12 + (4 * cc)
+                ext_words = struct.unpack_from(">H", data, ext_preamble_offset + 2)[0]
+                ext_data_len = ext_words * 4
+
+            header = bytes(data[:header_size])
+            payload_with_nonce = data[header_size:]
+
+            # --- NaCl transport decrypt (aead_xchacha20_poly1305_rtpsize) ---
+            if len(payload_with_nonce) < 4:
+                return
+            nonce = bytearray(24)
+            nonce[:4] = payload_with_nonce[-4:]
+            encrypted = bytes(payload_with_nonce[:-4])
+
+            try:
+                box = nacl.secret.Aead(self._secret_key)
+                decrypted = box.decrypt(encrypted, header, bytes(nonce))
+            except Exception:
+                return
+
+            # Skip encrypted extension data to get the actual opus payload
+            if ext_data_len and len(decrypted) > ext_data_len:
+                decrypted = decrypted[ext_data_len:]
+
+            # --- Strip RTP padding (RFC 3550 §5.1) ---
+            if has_padding and len(decrypted) > 0:
+                pad_len = decrypted[-1]
+                if 0 < pad_len <= len(decrypted):
+                    decrypted = decrypted[:-pad_len]
+
+            if len(decrypted) < 1:
+                return
+
+            # Decode Opus → PCM (48kHz stereo)
+            try:
+                pcm_48k_stereo = self._decoder.decode(decrypted, 960 * 2)
+            except Exception:
+                return
+
+            # Resample 48kHz stereo → 24kHz mono
+            pcm_24k = self._resample_48k_stereo_to_24k_mono(pcm_48k_stereo)
+
+            # Queue for the bridge (thread-safe)
+            try:
+                self._raw_queue.put_nowait(pcm_24k)
+            except queue.Full:
+                pass
+
+        # Register with VoiceConnectionState (same as gateway's VoiceReceiver)
+        conn.add_socket_listener(on_packet)
+        logger.info("Registered audio receive callback (mode=%s, bot_ssrc=%d)", conn.mode, self._bot_ssrc)
+
+        # Start a task to drain the thread-safe queue into the asyncio queue
+        self._drain_task = asyncio.create_task(self._drain_raw_queue())
 
     async def _start_bot(self) -> None:
         """Run the Discord bot (blocks until stopped)."""
@@ -116,17 +251,13 @@ class DiscordVCAdapter(AudioAdapter):
         """Leave voice channel and disconnect."""
         self._running = False
 
-        # Cancel tasks
-        for task in [self._audio_recv_task, self._audio_send_task]:
-            if task:
-                task.cancel()
+        if self._audio_send_task:
+            self._audio_send_task.cancel()
 
-        # Disconnect voice
         if self.voice_client and self.voice_client.is_connected():
             await self.voice_client.disconnect()
             self.voice_client = None
 
-        # Close bot
         if self.bot and not self.bot.is_closed():
             await self.bot.close()
 
@@ -154,52 +285,22 @@ class DiscordVCAdapter(AudioAdapter):
         """Log state change (no hardware LEDs on Discord)."""
         logger.debug("Discord VC state: %s", state)
 
-    # ── Audio Processing ──────────────────────────────────────────────
+    async def _drain_raw_queue(self) -> None:
+        """Drain the thread-safe raw queue into the asyncio audio queue."""
+        import queue
+        while self._running:
+            try:
+                pcm = self._raw_queue.get(timeout=0.1)
+                await self.audio_queue.put(pcm)
+            except queue.Empty:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                break
 
-    async def _receive_audio_loop(self) -> None:
-        """Receive decoded audio from Discord via Sink, resample, queue for bridge.
-
-        discord.py 2.x uses VoiceClient.listen(Sink) for receiving audio.
-        The Sink receives 48kHz stereo PCM16 — we downsample to 16kHz mono.
-        """
-        import opuslib
-
-        class PCMQueueSink(discord.sinks.Sink):
-            def __init__(self, queue, parent):
-                super().__init__()
-                self.queue = queue
-                self.parent = parent
-
-            def write(self, data, user):
-                """Called by discord.py with decoded PCM (48kHz stereo)."""
-                if data and user:
-                    try:
-                        pcm_24k = self.parent._resample_48k_stereo_to_24k_mono(data)
-                        self.queue.put_nowait(pcm_24k)
-                    except asyncio.QueueFull:
-                        pass
-
-            def cleanup(self):
-                pass
-
-        sink = PCMQueueSink(self.audio_queue, self)
-        self.voice_client.listen(sink)
-
-        # Keep the loop alive while connected
-        while self._running and self.voice_client and self.voice_client.is_connected():
-            await asyncio.sleep(0.5)
-
-        self.voice_client.stop_listening()
+    # ── Audio Send Loop ──────────────────────────────────────────────
 
     async def _send_audio_loop(self) -> None:
-        """Read PCM16 from TTS queue, encode to Opus, send to Discord.
-
-        Discord expects 48kHz stereo Opus. We upsample from 16kHz mono.
-        """
-        import opuslib
-
-        encoder = opuslib.Encoder(48000, 2, "voip")  # Discord: 48kHz stereo, VOIP mode
-
+        """Read PCM16 from TTS queue, encode to Opus, send to Discord."""
         while self._running and self.voice_client and self.voice_client.is_connected():
             try:
                 pcm_24k = await asyncio.wait_for(self.tts_queue.get(), timeout=0.5)
@@ -207,8 +308,8 @@ class DiscordVCAdapter(AudioAdapter):
                 # Upsample 24kHz mono → 48kHz stereo
                 pcm_48k_stereo = self._resample_24k_mono_to_48k_stereo(pcm_24k)
 
-                # Encode to Opus
-                opus_packet = encoder.encode(pcm_48k_stereo, 960 * 2)  # 20ms frame
+                # Encode to Opus (20ms frame = 960 samples at 48kHz)
+                opus_packet = self._encoder.encode(pcm_48k_stereo, 960 * 2)
 
                 # Send to Discord
                 if self.voice_client:
@@ -226,21 +327,14 @@ class DiscordVCAdapter(AudioAdapter):
 
     @staticmethod
     def _resample_48k_stereo_to_24k_mono(pcm: bytes) -> bytes:
-        """Downsample 48kHz stereo PCM16 → 24kHz mono PCM16.
-
-        Simple approach: average stereo channels, then take every 2nd sample
-        (48k / 24k = 2). For production, use scipy.signal.resample or soxr.
-        """
-        import struct
-
-        # Unpack 16-bit stereo samples
+        """Downsample 48kHz stereo PCM16 → 24kHz mono PCM16."""
         num_samples = len(pcm) // 4  # 4 bytes per stereo sample (2 × int16)
         if num_samples == 0:
             return b""
 
         samples = struct.unpack(f"<{num_samples * 2}h", pcm)
 
-        # Average stereo → mono, then decimate 2:1
+        # Average stereo → mono, then decimate 2:1 (48k → 24k)
         mono_24k = []
         for i in range(0, num_samples, 2):
             left = samples[i * 2]
@@ -252,13 +346,7 @@ class DiscordVCAdapter(AudioAdapter):
 
     @staticmethod
     def _resample_24k_mono_to_48k_stereo(pcm: bytes) -> bytes:
-        """Upsample 24kHz mono PCM16 → 48kHz stereo PCM16.
-
-        Simple approach: repeat each sample 2×, duplicate to stereo.
-        For production, use proper interpolation (scipy, soxr).
-        """
-        import struct
-
+        """Upsample 24kHz mono PCM16 → 48kHz stereo PCM16."""
         num_samples = len(pcm) // 2  # 2 bytes per mono sample
         if num_samples == 0:
             return b""
